@@ -1,5 +1,6 @@
 // Paste this into Scriptable and replace QUOTA_URL.
 const QUOTA_URL = "http://YOUR_TAILSCALE_IP:8765/quota?token=YOUR_WIDGET_TOKEN";
+const REFRESH_MINUTES = 5;
 
 const COLORS = {
   bg: new Color("#000000"),
@@ -169,6 +170,7 @@ function renderError(widget, error) {
 
 async function createWidget() {
   const widget = new ListWidget();
+  widget.refreshAfterDate = new Date(Date.now() + REFRESH_MINUTES * 60 * 1000);
   widget.backgroundColor = COLORS.bg;
   widget.setPadding(14, 14, 14, 14);
 

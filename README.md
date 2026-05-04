@@ -51,6 +51,8 @@ const QUOTA_URL = "http://100.x.y.z:8765/quota?token=<your-widget-token>";
 
 then add a Scriptable widget to the home screen and select the script.
 
+the script asks ios to refresh the widget every 5 minutes. ios may still delay home-screen widget refreshes.
+
 ---
 
 ## what it reads
