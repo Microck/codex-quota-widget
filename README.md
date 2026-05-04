@@ -4,6 +4,10 @@
   tiny bridge + scriptable widget for merged codex quotas from cliproxyapi.
 </p>
 
+merge multiple codex accounts into one home-screen view with unified 5-hour and weekly quota windows.
+
+![codex quota widget preview](assets/widget-preview.png)
+
 ---
 
 ## quick start
