@@ -31,6 +31,45 @@ function colorFor(value) {
   return COLORS.green;
 }
 
+function themeFor(value) {
+  const remaining = number(value);
+  if (remaining <= 10) {
+    return {
+      top: new Color("#450a0a"),
+      bottom: new Color("#0b1020"),
+      accent: COLORS.red,
+    };
+  }
+  if (remaining <= 30) {
+    return {
+      top: new Color("#422006"),
+      bottom: new Color("#0b1020"),
+      accent: COLORS.yellow,
+    };
+  }
+  return {
+    top: new Color("#052e16"),
+    bottom: new Color("#0b1020"),
+    accent: COLORS.green,
+  };
+}
+
+function overallRemaining(data) {
+  return Math.min(
+    number(data.windows.fiveHour.remainingPercent),
+    number(data.windows.weekly.remainingPercent),
+  );
+}
+
+function applyTheme(widget, value) {
+  const theme = themeFor(value);
+  const gradient = new LinearGradient();
+  gradient.colors = [theme.top, theme.bottom];
+  gradient.locations = [0, 1];
+  widget.backgroundGradient = gradient;
+  return theme;
+}
+
 function timeUntil(iso) {
   if (!iso) return "ready";
   const ms = Date.parse(iso) - Date.now();
@@ -54,16 +93,16 @@ function addText(stack, text, options = {}) {
   return line;
 }
 
-function addHeader(widget, data) {
+function addHeader(widget, data, theme, totalRemaining) {
   const row = widget.addStack();
   row.layoutHorizontally();
   row.centerAlignContent();
   addText(row, "Codex", { size: 16, font: Font.boldSystemFont(16) });
   row.addSpacer();
-  addText(row, `${data.readyAccountCount}/${data.accountCount}`, {
+  addText(row, `total ${percent(totalRemaining)}`, {
     size: 14,
     font: Font.boldSystemFont(14),
-    color: data.readyAccountCount > 0 ? COLORS.green : COLORS.red,
+    color: theme.accent,
   });
 }
 
@@ -141,8 +180,10 @@ async function createWidget() {
     return widget;
   }
 
+  const totalRemaining = overallRemaining(data);
+  const theme = applyTheme(widget, totalRemaining);
   const barWidth = config.widgetFamily === "small" ? 130 : 230;
-  addHeader(widget, data);
+  addHeader(widget, data, theme, totalRemaining);
   widget.addSpacer(12);
   addMeter(widget, "5h window", data.windows.fiveHour, barWidth);
 
@@ -152,7 +193,7 @@ async function createWidget() {
     widget.addSpacer(10);
     const footer = widget.addStack();
     footer.layoutHorizontally();
-    addText(footer, `${data.blockedAccountCount} blocked`, { size: 10, color: COLORS.muted });
+    addText(footer, `${data.readyAccountCount}/${data.accountCount} ready`, { size: 10, color: COLORS.muted });
     footer.addSpacer();
     addText(footer, `updated ${new Date(data.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, {
       size: 10,
