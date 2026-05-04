@@ -2,23 +2,33 @@
 const QUOTA_URL = "http://YOUR_TAILSCALE_IP:8765/quota?token=YOUR_WIDGET_TOKEN";
 
 const COLORS = {
-  background: new Color("#111827"),
-  muted: new Color("#9ca3af"),
-  text: new Color("#f9fafb"),
-  ok: new Color("#22c55e"),
-  warn: new Color("#f59e0b"),
-  bad: new Color("#ef4444"),
+  bg: new Color("#0b1020"),
+  track: new Color("#253044"),
+  text: new Color("#f8fafc"),
+  muted: new Color("#94a3b8"),
+  green: new Color("#22c55e"),
+  yellow: new Color("#f59e0b"),
+  red: new Color("#ef4444"),
 };
 
-function pct(value) {
-  const number = Number(value);
-  return `${Number.isFinite(number) ? Math.round(number) : 0}%`;
+function number(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function bar(remainingPercent, width = 14) {
-  const remaining = Math.max(0, Math.min(100, Number(remainingPercent) || 0));
-  const filled = Math.round((remaining / 100) * width);
-  return `${"#".repeat(filled)}${"-".repeat(width - filled)}`;
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function percent(value) {
+  return `${Math.round(number(value))}%`;
+}
+
+function colorFor(value) {
+  const remaining = number(value);
+  if (remaining <= 10) return COLORS.red;
+  if (remaining <= 30) return COLORS.yellow;
+  return COLORS.green;
 }
 
 function timeUntil(iso) {
@@ -28,98 +38,135 @@ function timeUntil(iso) {
   const minutes = Math.ceil(ms / 60000);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+  const restMinutes = minutes % 60;
+  if (hours < 48) return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
   const days = Math.floor(hours / 24);
-  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
-}
-
-function colorFor(remainingPercent) {
-  if (remainingPercent <= 10) return COLORS.bad;
-  if (remainingPercent <= 30) return COLORS.warn;
-  return COLORS.ok;
+  const restHours = hours % 24;
+  return restHours ? `${days}d ${restHours}h` : `${days}d`;
 }
 
 function addText(stack, text, options = {}) {
-  const line = stack.addText(text);
+  const line = stack.addText(String(text));
   line.textColor = options.color || COLORS.text;
   line.font = options.font || Font.systemFont(options.size || 12);
   line.lineLimit = options.lineLimit || 1;
+  line.minimumScaleFactor = options.minimumScaleFactor || 0.8;
   return line;
 }
 
-function addWindow(widget, title, windowSummary) {
+function addHeader(widget, data) {
   const row = widget.addStack();
   row.layoutHorizontally();
   row.centerAlignContent();
-
-  const label = row.addStack();
-  label.layoutVertically();
-  label.size = new Size(62, 34);
-  addText(label, title, { size: 10, color: COLORS.muted });
-  addText(label, pct(windowSummary.remainingPercent), {
-    size: 18,
-    font: Font.boldSystemFont(18),
-    color: colorFor(windowSummary.remainingPercent),
+  addText(row, "Codex", { size: 16, font: Font.boldSystemFont(16) });
+  row.addSpacer();
+  addText(row, `${data.readyAccountCount}/${data.accountCount}`, {
+    size: 14,
+    font: Font.boldSystemFont(14),
+    color: data.readyAccountCount > 0 ? COLORS.green : COLORS.red,
   });
+}
 
-  row.addSpacer(8);
+function addMeter(widget, label, summary, width) {
+  const remaining = clamp(number(summary.remainingPercent), 0, 100);
+  const fillWidth = clamp(Math.round((remaining / 100) * width), 3, width);
+  const color = colorFor(remaining);
 
-  const detail = row.addStack();
-  detail.layoutVertically();
-  addText(detail, bar(windowSummary.remainingPercent), {
-    size: 11,
-    font: Font.monospacedSystemFont(11),
-    color: colorFor(windowSummary.remainingPercent),
+  const top = widget.addStack();
+  top.layoutHorizontally();
+  top.centerAlignContent();
+  addText(top, label, { size: 12, color: COLORS.muted, font: Font.boldSystemFont(12) });
+  top.addSpacer();
+  addText(top, percent(remaining), { size: 18, color, font: Font.boldSystemFont(18) });
+
+  widget.addSpacer(4);
+
+  const track = widget.addStack();
+  track.layoutHorizontally();
+  track.size = new Size(width, 10);
+  track.backgroundColor = COLORS.track;
+  track.cornerRadius = 5;
+
+  const fill = track.addStack();
+  fill.size = new Size(fillWidth, 10);
+  fill.backgroundColor = color;
+  fill.cornerRadius = 5;
+  track.addSpacer();
+
+  widget.addSpacer(4);
+
+  const bottom = widget.addStack();
+  bottom.layoutHorizontally();
+  addText(bottom, `${Math.round(number(summary.remainingUnits))}/${summary.capacityUnits} units`, {
+    size: 10,
+    color: COLORS.muted,
   });
-  addText(detail, `refill ${timeUntil(windowSummary.nextRefillAt || windowSummary.allCurrentUsageClearsAt)}`, {
+  bottom.addSpacer();
+  addText(bottom, `refill ${timeUntil(summary.nextRefillAt || summary.allCurrentUsageClearsAt)}`, {
     size: 10,
     color: COLORS.muted,
   });
 }
 
+async function loadQuota() {
+  const request = new Request(QUOTA_URL);
+  request.timeoutInterval = 20;
+  return await request.loadJSON();
+}
+
+function renderError(widget, error) {
+  widget.backgroundColor = COLORS.bg;
+  widget.setPadding(14, 14, 14, 14);
+  addText(widget, "Codex", { size: 16, font: Font.boldSystemFont(16) });
+  widget.addSpacer(8);
+  addText(widget, "Bridge error", { size: 18, font: Font.boldSystemFont(18), color: COLORS.red });
+  widget.addSpacer(4);
+  addText(widget, String(error.message || error).slice(0, 120), {
+    size: 11,
+    color: COLORS.muted,
+    lineLimit: 3,
+  });
+}
+
 async function createWidget() {
   const widget = new ListWidget();
-  widget.backgroundColor = COLORS.background;
+  widget.backgroundColor = COLORS.bg;
   widget.setPadding(14, 14, 14, 14);
 
+  let data;
   try {
-    const request = new Request(QUOTA_URL);
-    request.timeoutInterval = 20;
-    const data = await request.loadJSON();
-
-    const title = widget.addStack();
-    title.layoutHorizontally();
-    addText(title, "Codex quotas", { size: 13, font: Font.boldSystemFont(13) });
-    title.addSpacer();
-    addText(title, `${data.readyAccountCount}/${data.accountCount}`, {
-      size: 12,
-      color: data.readyAccountCount > 0 ? COLORS.ok : COLORS.bad,
-      font: Font.boldSystemFont(12),
-    });
-
-    widget.addSpacer(10);
-    addWindow(widget, "5h", data.windows.fiveHour);
-    widget.addSpacer(8);
-    addWindow(widget, "weekly", data.windows.weekly);
-
-    if (config.widgetFamily !== "small") {
-      widget.addSpacer(10);
-      addText(widget, data.nextAccountReadyAt ? `next ready ${timeUntil(data.nextAccountReadyAt)}` : "accounts ready", {
-        size: 11,
-        color: COLORS.muted,
-      });
-    }
+    data = await loadQuota();
   } catch (error) {
-    addText(widget, "Codex quotas", { size: 13, font: Font.boldSystemFont(13) });
-    widget.addSpacer(8);
-    addText(widget, "Bridge error", { size: 18, font: Font.boldSystemFont(18), color: COLORS.bad });
-    addText(widget, String(error.message || error).slice(0, 80), { size: 10, color: COLORS.muted, lineLimit: 3 });
+    renderError(widget, error);
+    return widget;
+  }
+
+  const barWidth = config.widgetFamily === "small" ? 130 : 230;
+  addHeader(widget, data);
+  widget.addSpacer(12);
+  addMeter(widget, "5h window", data.windows.fiveHour, barWidth);
+
+  if (config.widgetFamily !== "small") {
+    widget.addSpacer(10);
+    addMeter(widget, "weekly window", data.windows.weekly, barWidth);
+    widget.addSpacer(10);
+    const footer = widget.addStack();
+    footer.layoutHorizontally();
+    addText(footer, `${data.blockedAccountCount} blocked`, { size: 10, color: COLORS.muted });
+    footer.addSpacer();
+    addText(footer, `updated ${new Date(data.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, {
+      size: 10,
+      color: COLORS.muted,
+    });
   }
 
   return widget;
 }
 
 const widget = await createWidget();
-if (config.runsInWidget) Script.setWidget(widget);
-else await widget.presentMedium();
+if (config.runsInWidget) {
+  Script.setWidget(widget);
+} else {
+  await widget.presentMedium();
+}
 Script.complete();
