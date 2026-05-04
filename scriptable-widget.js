@@ -2,7 +2,7 @@
 const QUOTA_URL = "http://YOUR_TAILSCALE_IP:8765/quota?token=YOUR_WIDGET_TOKEN";
 
 const COLORS = {
-  bg: new Color("#0b1020"),
+  bg: new Color("#000000"),
   track: new Color("#253044"),
   text: new Color("#f8fafc"),
   muted: new Color("#94a3b8"),
@@ -35,21 +35,21 @@ function themeFor(value) {
   const remaining = number(value);
   if (remaining <= 10) {
     return {
-      top: new Color("#450a0a"),
-      bottom: new Color("#0b1020"),
+      top: COLORS.bg,
+      bottom: COLORS.bg,
       accent: COLORS.red,
     };
   }
   if (remaining <= 30) {
     return {
-      top: new Color("#422006"),
-      bottom: new Color("#0b1020"),
+      top: COLORS.bg,
+      bottom: COLORS.bg,
       accent: COLORS.yellow,
     };
   }
   return {
-    top: new Color("#052e16"),
-    bottom: new Color("#0b1020"),
+    top: COLORS.bg,
+    bottom: COLORS.bg,
     accent: COLORS.green,
   };
 }
