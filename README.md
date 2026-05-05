@@ -24,6 +24,13 @@ CODEX_QUOTA_WIDGET_HOST="127.0.0.1" \
 node server.mjs
 ```
 
+or create a local env file:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
 if your phone reaches the machine over tailscale, bind the bridge to that tailscale address:
 
 ```bash
@@ -37,6 +44,34 @@ open:
 
 ```text
 http://100.x.y.z:8765/quota?token=<your-widget-token>
+```
+
+---
+
+## start at boot
+
+install the systemd service on the machine that runs cliproxyapi:
+
+```bash
+cp .env.example .env
+perl -0pi -e "s/replace-with-output-of-openssl-rand-hex-18/$(openssl rand -hex 18)/" .env
+$EDITOR .env
+./install-startup-service.sh
+```
+
+the installer writes `codex-quota-widget.service` to `/etc/systemd/system`, starts it immediately, and enables it for `multi-user.target`.
+
+the generated service:
+
+- reads bridge configuration from the ignored local `.env`
+- starts after network ordering and `cliproxyapi.service`
+- includes Tailscale ordering for hosts that bind to a Tailscale address
+- restarts every 10 seconds if the bridge exits while dependencies finish starting
+
+check it later with:
+
+```bash
+systemctl status codex-quota-widget.service --no-pager
 ```
 
 ---
