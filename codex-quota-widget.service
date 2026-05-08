@@ -1,0 +1,19 @@
+[Unit]
+Description=Codex Quota Widget Bridge
+Wants=network-online.target tailscaled.service
+Requires=cliproxyapi.service
+After=network-online.target tailscaled.service cliproxyapi.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/workspace/codex-quota-widget
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v24.13.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/ubuntu/workspace/codex-quota-widget/start-my-widget.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
