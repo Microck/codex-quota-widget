@@ -107,10 +107,10 @@ function addHeader(widget, data, theme, totalRemaining) {
   });
 }
 
-function addMeter(widget, label, summary, width) {
+function addMeter(widget, label, summary, width, accounts, windowKey) {
   const remaining = clamp(number(summary.remainingPercent), 0, 100);
-  const fillWidth = clamp(Math.round((remaining / 100) * width), 3, width);
   const color = colorFor(remaining);
+  const accountCount = summary.accountCount;
 
   const top = widget.addStack();
   top.layoutHorizontally();
@@ -121,17 +121,35 @@ function addMeter(widget, label, summary, width) {
 
   widget.addSpacer(4);
 
-  const track = widget.addStack();
-  track.layoutHorizontally();
-  track.size = new Size(width, 10);
-  track.backgroundColor = COLORS.track;
-  track.cornerRadius = 5;
+  // Build container-based bar
+  const barRow = widget.addStack();
+  barRow.layoutHorizontally();
+  barRow.spacing = 2;
+  barRow.size = new Size(width, 10);
 
-  const fill = track.addStack();
-  fill.size = new Size(fillWidth, 10);
-  fill.backgroundColor = color;
-  fill.cornerRadius = 5;
-  track.addSpacer();
+  if (accountCount > 0) {
+    const containerWidth = Math.max(3, Math.floor((width - (accountCount - 1) * 2) / accountCount));
+    
+    for (let i = 0; i < accountCount; i++) {
+      // Find the corresponding account for this window
+      const filteredAccounts = accounts.filter((account) => {
+        if (windowKey === "fiveHour") {
+          // Only include accounts with non-exhausted weekly quota
+          return account.windows.weekly?.remainingPercent > 0.01;
+        }
+        return true;
+      });
+      
+      const account = filteredAccounts[i];
+      const accountRemaining = account?.windows[windowKey]?.remainingPercent || 0;
+      const containerColor = colorFor(accountRemaining);
+
+      const container = barRow.addStack();
+      container.size = new Size(containerWidth, 10);
+      container.backgroundColor = containerColor;
+      container.cornerRadius = 2;
+    }
+  }
 
   widget.addSpacer(4);
 
@@ -187,11 +205,11 @@ async function createWidget() {
   const barWidth = config.widgetFamily === "small" ? 130 : 230;
   addHeader(widget, data, theme, totalRemaining);
   widget.addSpacer(12);
-  addMeter(widget, "5h window", data.windows.fiveHour, barWidth);
+  addMeter(widget, "5h window", data.windows.fiveHour, barWidth, data.accounts, "fiveHour");
 
   if (config.widgetFamily !== "small") {
     widget.addSpacer(10);
-    addMeter(widget, "weekly window", data.windows.weekly, barWidth);
+    addMeter(widget, "weekly window", data.windows.weekly, barWidth, data.accounts, "weekly");
     widget.addSpacer(10);
     const footer = widget.addStack();
     footer.layoutHorizontally();
