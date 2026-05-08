@@ -183,11 +183,17 @@ function latestIso(values) {
 }
 
 function summarizeWindow(accounts, windowKey) {
-  const windows = accounts.map((account) => account.windows[windowKey]).filter(Boolean);
+  // For the 5h window, exclude accounts with exhausted weekly quota (0% remaining).
+  // These accounts cannot be used even if they have 5h quota available.
+  const effectiveAccounts = windowKey === "fiveHour"
+    ? accounts.filter((account) => account.windows.weekly?.remainingPercent > 0.01)
+    : accounts;
+
+  const windows = effectiveAccounts.map((account) => account.windows[windowKey]).filter(Boolean);
   const count = windows.length;
   const usedTotal = windows.reduce((sum, window) => sum + window.usedPercent, 0);
   const remainingTotal = windows.reduce((sum, window) => sum + window.remainingPercent, 0);
-  const exhausted = accounts.filter((account) => account.windows[windowKey]?.remainingPercent <= 0.01);
+  const exhausted = effectiveAccounts.filter((account) => account.windows[windowKey]?.remainingPercent <= 0.01);
 
   return {
     accountCount: count,
@@ -198,7 +204,7 @@ function summarizeWindow(accounts, windowKey) {
     exhaustedCount: exhausted.length,
     nextRefillAt: earliestIso(exhausted.map((account) => account.windows[windowKey]?.resetAt)),
     allCurrentUsageClearsAt: latestIso(
-      accounts
+      effectiveAccounts
         .filter((account) => account.windows[windowKey]?.usedPercent > 0.01)
         .map((account) => account.windows[windowKey]?.resetAt),
     ),
