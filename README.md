@@ -6,7 +6,7 @@
 
 merge multiple codex accounts into one home-screen view with unified 5-hour and weekly quota windows.
 
-![codex quota widget preview](assets/widget-preview.png)
+<img src="assets/widget-preview.png" alt="codex quota widget preview" width="560">
 
 ---
 
@@ -108,6 +108,6 @@ if the usage response includes a separate `GPT-5.3-Codex-Spark` quota under
 `additional_rate_limits`, the bridge returns it as a separate optional `spark`
 summary and the widget shows it only for accounts that actually report that quota.
 
-![codex spark quota preview](assets/codex-spark.png)
+<img src="assets/codex-spark.png" alt="codex spark quota preview" width="560">
 
 tokens, auth file paths, and the management password are not returned by the bridge.
