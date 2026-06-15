@@ -166,6 +166,15 @@ function addMeter(widget, label, summary, width, accounts, windowKey) {
   });
 }
 
+function sparkAccounts(data) {
+  return (Array.isArray(data.accounts) ? data.accounts : [])
+    .filter((account) => account.spark)
+    .map((account) => ({
+      ...account,
+      windows: account.spark.windows,
+    }));
+}
+
 async function loadQuota() {
   const request = new Request(QUOTA_URL);
   request.timeoutInterval = 20;
@@ -210,6 +219,15 @@ async function createWidget() {
   if (config.widgetFamily !== "small") {
     widget.addSpacer(10);
     addMeter(widget, "weekly window", data.windows.weekly, barWidth, data.accounts, "weekly");
+    if (data.spark) {
+      const accounts = sparkAccounts(data);
+      widget.addSpacer(10);
+      if (config.widgetFamily === "large") {
+        addMeter(widget, "Spark 5h", data.spark.windows.fiveHour, barWidth, accounts, "fiveHour");
+        widget.addSpacer(10);
+      }
+      addMeter(widget, "Spark weekly", data.spark.windows.weekly, barWidth, accounts, "weekly");
+    }
     widget.addSpacer(10);
     const footer = widget.addStack();
     footer.layoutHorizontally();

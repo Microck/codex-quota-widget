@@ -5,6 +5,7 @@ const DEFAULT_CLIPROXY_BASE_URL = "http://127.0.0.1:8317";
 const DEFAULT_PORT = 8765;
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_USER_AGENT = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
+const SPARK_METERED_FEATURE = "codex_bengalfox";
 
 function requiredEnv(name) {
   const value = process.env[name]?.trim();
@@ -105,12 +106,43 @@ function parseStatusReset(statusMessage) {
   }
 }
 
+function normalizeWindow(rateLimit, windowKey) {
+  const window = rateLimit?.[windowKey] || {};
+  const usedPercent = clampPercent(window.used_percent);
+  return {
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    resetAt: epochSecondsToIso(window.reset_at),
+    windowSeconds: Number(window.limit_window_seconds || 0),
+  };
+}
+
+function isSparkLimit(limit) {
+  const meteredFeature = String(limit?.metered_feature || "").toLowerCase();
+  const limitName = String(limit?.limit_name || "").toLowerCase();
+  return meteredFeature === SPARK_METERED_FEATURE || limitName.includes("spark");
+}
+
+function normalizeSparkLimit(usage) {
+  const sparkLimit = (Array.isArray(usage?.additional_rate_limits) ? usage.additional_rate_limits : [])
+    .find(isSparkLimit);
+  const rateLimit = sparkLimit?.rate_limit;
+  if (!rateLimit?.primary_window && !rateLimit?.secondary_window) return null;
+
+  return {
+    name: String(sparkLimit.limit_name || "GPT-5.3-Codex-Spark"),
+    meteredFeature: String(sparkLimit.metered_feature || SPARK_METERED_FEATURE),
+    allowed: rateLimit.allowed === true && rateLimit.limit_reached !== true,
+    limitReached: rateLimit.limit_reached === true,
+    windows: {
+      fiveHour: normalizeWindow(rateLimit, "primary_window"),
+      weekly: normalizeWindow(rateLimit, "secondary_window"),
+    },
+  };
+}
+
 function normalizeAccount(file, usage) {
   const rateLimit = usage?.rate_limit || {};
-  const primary = rateLimit.primary_window || {};
-  const secondary = rateLimit.secondary_window || {};
-  const fiveHourUsed = clampPercent(primary.used_percent);
-  const weeklyUsed = clampPercent(secondary.used_percent);
 
   return {
     email: String(usage?.email || file.email),
@@ -121,19 +153,10 @@ function normalizeAccount(file, usage) {
     nextRetryAfter: file.nextRetryAfter,
     statusResetAt: parseStatusReset(file.statusMessage),
     windows: {
-      fiveHour: {
-        usedPercent: fiveHourUsed,
-        remainingPercent: 100 - fiveHourUsed,
-        resetAt: epochSecondsToIso(primary.reset_at),
-        windowSeconds: Number(primary.limit_window_seconds || 0),
-      },
-      weekly: {
-        usedPercent: weeklyUsed,
-        remainingPercent: 100 - weeklyUsed,
-        resetAt: epochSecondsToIso(secondary.reset_at),
-        windowSeconds: Number(secondary.limit_window_seconds || 0),
-      },
+      fiveHour: normalizeWindow(rateLimit, "primary_window"),
+      weekly: normalizeWindow(rateLimit, "secondary_window"),
     },
+    spark: normalizeSparkLimit(usage),
   };
 }
 
@@ -173,6 +196,26 @@ function summarizeWindow(accounts, windowKey) {
 
 function summarizeAccounts(accounts) {
   const blockedAccounts = accounts.filter((account) => !account.allowed);
+  const sparkAccounts = accounts
+    .filter((account) => account.spark)
+    .map((account) => ({
+      ...account,
+      allowed: account.spark.allowed,
+      limitReached: account.spark.limitReached,
+      windows: account.spark.windows,
+    }));
+  const spark = sparkAccounts.length > 0
+    ? {
+        accountCount: sparkAccounts.length,
+        readyAccountCount: sparkAccounts.filter((account) => account.allowed).length,
+        blockedAccountCount: sparkAccounts.filter((account) => !account.allowed).length,
+        windows: {
+          fiveHour: summarizeWindow(sparkAccounts, "fiveHour"),
+          weekly: summarizeWindow(sparkAccounts, "weekly"),
+        },
+      }
+    : null;
+
   return {
     generatedAt: new Date().toISOString(),
     source: "cliproxyapi:/v0/management/api-call -> chatgpt.com/backend-api/wham/usage",
@@ -192,6 +235,7 @@ function summarizeAccounts(accounts) {
       fiveHour: summarizeWindow(accounts, "fiveHour"),
       weekly: summarizeWindow(accounts, "weekly"),
     },
+    spark,
     accounts,
   };
 }

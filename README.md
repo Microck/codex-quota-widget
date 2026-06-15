@@ -104,5 +104,8 @@ https://chatgpt.com/backend-api/wham/usage
 ```
 
 the widget shows merged 5-hour and weekly windows, ready/blocked account counts, and refill times.
+if the usage response includes a separate `GPT-5.3-Codex-Spark` quota under
+`additional_rate_limits`, the bridge returns it as a separate optional `spark`
+summary and the widget shows it only for accounts that actually report that quota.
 
 tokens, auth file paths, and the management password are not returned by the bridge.
