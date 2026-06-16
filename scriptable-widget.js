@@ -32,6 +32,28 @@ function colorFor(value) {
   return COLORS.green;
 }
 
+function fillWidthFor(value, width) {
+  const remaining = clamp(number(value), 0, 100);
+  return Math.round((remaining / 100) * width);
+}
+
+function addFill(track, width, height, remaining, color) {
+  const fillWidth = fillWidthFor(remaining, width);
+  if (fillWidth > 0) {
+    const fill = track.addStack();
+    fill.size = new Size(fillWidth, height);
+    fill.backgroundColor = color;
+    fill.cornerRadius = Math.floor(height / 2);
+  }
+  track.addSpacer();
+}
+
+function accountsForWindow(accounts, windowKey) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  if (windowKey !== "fiveHour") return list;
+  return list.filter((account) => number(account.windows?.weekly?.remainingPercent) > 0.01);
+}
+
 function themeFor(value) {
   const remaining = number(value);
   if (remaining <= 10) {
@@ -110,7 +132,8 @@ function addHeader(widget, data, theme, totalRemaining) {
 function addMeter(widget, label, summary, width, accounts, windowKey) {
   const remaining = clamp(number(summary.remainingPercent), 0, 100);
   const color = colorFor(remaining);
-  const accountCount = summary.accountCount;
+  const visibleAccounts = accountsForWindow(accounts, windowKey);
+  const accountCount = visibleAccounts.length;
 
   const top = widget.addStack();
   top.layoutHorizontally();
@@ -129,25 +152,18 @@ function addMeter(widget, label, summary, width, accounts, windowKey) {
 
   if (accountCount > 0) {
     const containerWidth = Math.max(3, Math.floor((width - (accountCount - 1) * 2) / accountCount));
-    
+
     for (let i = 0; i < accountCount; i++) {
-      // Find the corresponding account for this window
-      const filteredAccounts = accounts.filter((account) => {
-        if (windowKey === "fiveHour") {
-          // Only include accounts with non-exhausted weekly quota
-          return account.windows.weekly?.remainingPercent > 0.01;
-        }
-        return true;
-      });
-      
-      const account = filteredAccounts[i];
-      const accountRemaining = account?.windows[windowKey]?.remainingPercent || 0;
+      const account = visibleAccounts[i];
+      const accountRemaining = account?.windows?.[windowKey]?.remainingPercent || 0;
       const containerColor = colorFor(accountRemaining);
 
       const container = barRow.addStack();
+      container.layoutHorizontally();
       container.size = new Size(containerWidth, 10);
-      container.backgroundColor = containerColor;
-      container.cornerRadius = 2;
+      container.backgroundColor = COLORS.track;
+      container.cornerRadius = 5;
+      addFill(container, containerWidth, 10, accountRemaining, containerColor);
     }
   }
 
