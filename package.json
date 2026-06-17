@@ -1,13 +1,13 @@
 {
   "name": "codex-quota-widget",
   "version": "0.1.0",
-  "description": "Tiny bridge and Scriptable widget for merged Codex quotas from CLIProxyAPI.",
+  "description": "Tiny bridge and Scriptable widget for Codex quota.",
   "type": "module",
   "bin": {
     "codex-quota-widget": "./server.mjs"
   },
   "scripts": {
-    "check": "node --check server.mjs && node --check scriptable-widget.js"
+    "check": "node --check server.mjs && node --check scriptable-widget.js && node --test"
   },
   "license": "MIT",
   "engines": {

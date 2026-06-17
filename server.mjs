@@ -1,10 +1,17 @@
 #!/usr/bin/env node
+import { readFile, rename, writeFile } from "node:fs/promises";
 import http from "node:http";
+import { homedir } from "node:os";
+import path from "node:path";
 
 const DEFAULT_CLIPROXY_BASE_URL = "http://127.0.0.1:8317";
+const DEFAULT_CODEX_AUTH_FILE = path.join(homedir(), ".codex", "auth.json");
 const DEFAULT_PORT = 8765;
-const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_USAGE_URL = process.env.CODEX_USAGE_URL?.trim() || "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_USER_AGENT = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
+const OPENAI_OAUTH_TOKEN_URL = process.env.CODEX_OAUTH_TOKEN_URL?.trim() || "https://auth.openai.com/oauth/token";
+const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const TOKEN_REFRESH_SKEW_SECONDS = 300;
 const SPARK_METERED_FEATURE = "codex_bengalfox";
 
 function requiredEnv(name) {
@@ -15,6 +22,10 @@ function requiredEnv(name) {
 
 function cliproxyHeaders() {
   return { Authorization: `Bearer ${requiredEnv("CLIPROXY_MANAGEMENT_KEY")}` };
+}
+
+function optionalEnv(name) {
+  return process.env[name]?.trim() || "";
 }
 
 async function readJson(response) {
@@ -38,7 +49,32 @@ function cliproxyUrl(path) {
   return new URL(path, base.endsWith("/") ? base : `${base}/`).toString();
 }
 
-async function listCodexAuthFiles() {
+function decodeJwtPayload(token) {
+  const payload = String(token || "").split(".")[1];
+  if (!payload) return {};
+
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function jwtExpiresSoon(token) {
+  const expiresAt = Number(decodeJwtPayload(token).exp);
+  if (!Number.isFinite(expiresAt)) return true;
+  return expiresAt - TOKEN_REFRESH_SKEW_SECONDS <= Math.floor(Date.now() / 1000);
+}
+
+function authFilePath() {
+  return optionalEnv("CODEX_AUTH_FILE") || DEFAULT_CODEX_AUTH_FILE;
+}
+
+function hasCliproxyManagement() {
+  return Boolean(optionalEnv("CLIPROXY_MANAGEMENT_KEY"));
+}
+
+async function listCliproxyCodexAuthFiles() {
   const data = await fetchJson(cliproxyUrl("/v0/management/auth-files"), {
     headers: cliproxyHeaders(),
   });
@@ -53,11 +89,121 @@ async function listCodexAuthFiles() {
       status: String(file.status || "unknown"),
       statusMessage: typeof file.status_message === "string" ? file.status_message : "",
       nextRetryAfter: typeof file.next_retry_after === "string" ? file.next_retry_after : null,
+      source: "cliproxyapi",
     }))
     .filter((file) => file.authIndex && file.accountId);
 }
 
-async function callCodexUsage(file) {
+async function refreshCodexTokens(auth, filePath) {
+  const refreshToken = String(auth?.tokens?.refresh_token || "");
+  if (!refreshToken) {
+    throw new Error("Codex auth file has no refresh token. Run Codex login again.");
+  }
+
+  const body = new URLSearchParams({
+    client_id: CODEX_OAUTH_CLIENT_ID,
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    scope: "openid profile email",
+  });
+
+  const response = await fetch(OPENAI_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body,
+  });
+  const tokenResponse = await readJson(response);
+
+  if (!response.ok) {
+    throw new Error(`Codex token refresh failed with HTTP ${response.status}: ${JSON.stringify(tokenResponse)}`);
+  }
+
+  const nextIdToken = String(tokenResponse?.id_token || "");
+  const nextAccessToken = String(tokenResponse?.access_token || "");
+  const nextRefreshToken = String(tokenResponse?.refresh_token || refreshToken);
+  const idToken = decodeJwtPayload(nextIdToken);
+  const nextAccountId = String(auth?.tokens?.account_id || idToken.chatgpt_account_id || "");
+
+  if (!nextIdToken || !nextAccessToken || !nextRefreshToken || !nextAccountId) {
+    throw new Error("Codex token refresh returned an incomplete token set. Run Codex login again.");
+  }
+
+  const nextAuth = {
+    ...auth,
+    email: auth.email || idToken.email,
+    last_refresh: new Date().toISOString(),
+    tokens: {
+      ...auth.tokens,
+      id_token: nextIdToken,
+      access_token: nextAccessToken,
+      refresh_token: nextRefreshToken,
+      account_id: nextAccountId,
+    },
+  };
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+
+  await writeFile(tempPath, `${JSON.stringify(nextAuth, null, 2)}\n`, { mode: 0o600 });
+  await rename(tempPath, filePath);
+  return nextAuth;
+}
+
+async function listLocalCodexAuthFile() {
+  const filePath = authFilePath();
+  let auth;
+
+  try {
+    auth = JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    throw new Error("Failed to read Codex auth file. Run Codex login or set CODEX_AUTH_FILE to a valid auth.json.");
+  }
+
+  const tokens = auth?.tokens || {};
+  const idToken = decodeJwtPayload(tokens.id_token);
+  const accessToken = String(tokens.access_token || "");
+  const accountId = String(tokens.account_id || idToken.chatgpt_account_id || "");
+
+  if (!accessToken || !accountId) {
+    throw new Error(
+      "Codex auth file does not contain ChatGPT access tokens. Run codex login and choose Sign in with ChatGPT, or set CODEX_AUTH_FILE to a valid auth.json.",
+    );
+  }
+
+  if (jwtExpiresSoon(tokens.id_token)) {
+    try {
+      auth = await refreshCodexTokens(auth, filePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Could not refresh Codex auth from ${filePath}. Run codex login and choose Sign in with ChatGPT, then restart the bridge. ${message}`,
+      );
+    }
+  }
+
+  const refreshedTokens = auth?.tokens || {};
+  const refreshedIdToken = decodeJwtPayload(refreshedTokens.id_token);
+
+  return [
+    {
+      email: String(auth.email || refreshedIdToken.email || "local-codex-account"),
+      planType: String(refreshedIdToken.plan_type || "unknown"),
+      accountId: String(refreshedTokens.account_id || accountId),
+      accessToken: String(refreshedTokens.access_token || accessToken),
+      status: "local-auth-file",
+      statusMessage: "",
+      nextRetryAfter: null,
+      source: "codex-auth-file",
+    },
+  ];
+}
+
+async function listCodexAuthFiles() {
+  return hasCliproxyManagement() ? listCliproxyCodexAuthFiles() : listLocalCodexAuthFile();
+}
+
+async function callCodexUsageViaCliproxy(file) {
   const data = await fetchJson(cliproxyUrl("/v0/management/api-call"), {
     method: "POST",
     headers: {
@@ -83,6 +229,22 @@ async function callCodexUsage(file) {
     throw new Error(`Codex usage call returned ${data?.status_code}: ${JSON.stringify(body)}`);
   }
   return body;
+}
+
+async function callCodexUsageDirect(file) {
+  return fetchJson(CODEX_USAGE_URL, {
+    headers: {
+      Authorization: `Bearer ${file.accessToken}`,
+      "Chatgpt-Account-Id": file.accountId,
+      "User-Agent": CODEX_USER_AGENT,
+      Originator: "codex_cli_rs",
+      Accept: "application/json",
+    },
+  });
+}
+
+async function callCodexUsage(file) {
+  return file.source === "cliproxyapi" ? callCodexUsageViaCliproxy(file) : callCodexUsageDirect(file);
 }
 
 function clampPercent(value) {
@@ -194,7 +356,7 @@ function summarizeWindow(accounts, windowKey) {
   };
 }
 
-function summarizeAccounts(accounts) {
+function summarizeAccounts(accounts, source) {
   const blockedAccounts = accounts.filter((account) => !account.allowed);
   const sparkAccounts = accounts
     .filter((account) => account.spark)
@@ -218,7 +380,7 @@ function summarizeAccounts(accounts) {
 
   return {
     generatedAt: new Date().toISOString(),
-    source: "cliproxyapi:/v0/management/api-call -> chatgpt.com/backend-api/wham/usage",
+    source,
     accountCount: accounts.length,
     readyAccountCount: accounts.filter((account) => account.allowed).length,
     blockedAccountCount: blockedAccounts.length,
@@ -258,7 +420,11 @@ export async function buildQuotaSnapshot() {
     }
   }
 
-  return { ...summarizeAccounts(accounts), errorCount: errors.length, errors };
+  const source = hasCliproxyManagement()
+    ? "cliproxyapi:/v0/management/api-call -> chatgpt.com/backend-api/wham/usage"
+    : "codex-auth-file -> chatgpt.com/backend-api/wham/usage";
+
+  return { ...summarizeAccounts(accounts, source), errorCount: errors.length, errors };
 }
 
 function sendJson(response, statusCode, body) {

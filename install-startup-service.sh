@@ -21,19 +21,29 @@ if [[ -z "${node_path}" || ! -x "${node_path}" ]]; then
   exit 1
 fi
 
-for required_key in CLIPROXY_MANAGEMENT_KEY CODEX_QUOTA_WIDGET_TOKEN CODEX_QUOTA_WIDGET_HOST; do
+for required_key in CODEX_QUOTA_WIDGET_TOKEN CODEX_QUOTA_WIDGET_HOST; do
   if ! grep -Eq "^${required_key}=.+" "${env_file}"; then
     echo "Missing ${required_key} in ${env_file}." >&2
     exit 1
   fi
 done
 
-if grep -Eq "^(CLIPROXY_MANAGEMENT_KEY=your-management-password|CODEX_QUOTA_WIDGET_TOKEN=replace-with-output-of-openssl-rand-hex-18)$" "${env_file}"; then
-  echo "Replace the placeholder CLIPROXY_MANAGEMENT_KEY and CODEX_QUOTA_WIDGET_TOKEN values in ${env_file}." >&2
+if grep -Eq "^CODEX_QUOTA_WIDGET_TOKEN=replace-with-output-of-openssl-rand-hex-18$" "${env_file}"; then
+  echo "Replace the placeholder CODEX_QUOTA_WIDGET_TOKEN value in ${env_file}." >&2
+  exit 1
+fi
+
+if grep -Eq "^CLIPROXY_MANAGEMENT_KEY=your-management-password$" "${env_file}"; then
+  echo "Replace or remove the placeholder CLIPROXY_MANAGEMENT_KEY value in ${env_file}." >&2
   exit 1
 fi
 
 chmod 600 "${env_file}"
+
+cliproxy_unit_lines=""
+if grep -Eq "^CLIPROXY_MANAGEMENT_KEY=.+" "${env_file}"; then
+  cliproxy_unit_lines=$'Requires=cliproxyapi.service\nAfter=cliproxyapi.service'
+fi
 
 tmp_unit="$(mktemp)"
 trap 'rm -f "${tmp_unit}"' EXIT
@@ -42,8 +52,8 @@ cat > "${tmp_unit}" <<EOF
 [Unit]
 Description=Codex Quota Widget Bridge
 Wants=network-online.target tailscaled.service
-Requires=cliproxyapi.service
-After=network-online.target tailscaled.service cliproxyapi.service
+After=network-online.target tailscaled.service
+${cliproxy_unit_lines}
 StartLimitIntervalSec=0
 
 [Service]
