@@ -10,6 +10,7 @@ const COLORS = {
   green: new Color("#22c55e"),
   yellow: new Color("#f59e0b"),
   red: new Color("#ef4444"),
+  blue: new Color("#38bdf8"),
 };
 
 function number(value, fallback = 0) {
@@ -30,6 +31,17 @@ function colorFor(value) {
   if (remaining <= 10) return COLORS.red;
   if (remaining <= 30) return COLORS.yellow;
   return COLORS.green;
+}
+
+function colorForNudge(tier) {
+  if (tier === "expiringReset" || tier === "spend" || tier === "deadline") return COLORS.red;
+  if (tier === "useIfBlocked" || tier === "waitFiveHour") return COLORS.yellow;
+  if (tier === "hold" || tier === "steady") return COLORS.green;
+  return COLORS.blue;
+}
+
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
 function fillWidthFor(value, width) {
@@ -127,6 +139,34 @@ function addHeader(widget, data, theme, totalRemaining) {
     font: Font.boldSystemFont(14),
     color: theme.accent,
   });
+}
+
+function addResetAdvice(widget, data) {
+  const resetCredits = data.resetCredits || {};
+  const nudge = data.nudge || {};
+  const available = Number(resetCredits.availableCount);
+  const resetLabel = Number.isFinite(available)
+    ? plural(Math.max(0, Math.round(available)), "reset")
+    : "resets ?";
+  const accent = colorForNudge(nudge.tier);
+
+  const row = widget.addStack();
+  row.layoutHorizontally();
+  row.centerAlignContent();
+  addText(row, resetLabel, { size: 11, color: accent, font: Font.boldSystemFont(11) });
+  row.addSpacer();
+  addText(row, nudge.title || "Reset status", {
+    size: 11,
+    color: COLORS.text,
+    font: Font.boldSystemFont(11),
+    minimumScaleFactor: 0.7,
+  });
+
+  if (config.widgetFamily !== "small") {
+    widget.addSpacer(3);
+    const detail = nudge.detail || (resetCredits.nextExpiryAt ? `next expires ${timeUntil(resetCredits.nextExpiryAt)}` : "");
+    addText(widget, detail, { size: 10, color: COLORS.muted, lineLimit: 1 });
+  }
 }
 
 function addMeter(widget, label, summary, width, accounts, windowKey) {
@@ -229,7 +269,9 @@ async function createWidget() {
   const theme = applyTheme(widget, totalRemaining);
   const barWidth = config.widgetFamily === "small" ? 130 : 230;
   addHeader(widget, data, theme, totalRemaining);
-  widget.addSpacer(12);
+  widget.addSpacer(8);
+  addResetAdvice(widget, data);
+  widget.addSpacer(10);
   addMeter(widget, "5h window", data.windows.fiveHour, barWidth, data.accounts, "fiveHour");
 
   if (config.widgetFamily !== "small") {

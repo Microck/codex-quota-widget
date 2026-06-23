@@ -4,7 +4,7 @@
   tiny bridge + scriptable widget for codex quota on your home screen.
 </p>
 
-show one regular codex account directly, or merge multiple codex accounts through cliproxyapi, in one home-screen view with unified 5-hour and weekly quota windows.
+show one regular codex account directly, or merge multiple codex accounts through cliproxyapi, in one home-screen view with unified 5-hour and weekly quota windows, banked reset credits, and reset-use advice.
 
 <p align="center">
   <img src="assets/widget-preview.png" alt="codex quota widget preview" width="450">
@@ -112,9 +112,10 @@ for each codex auth, it calls:
 
 ```text
 https://chatgpt.com/backend-api/wham/usage
+https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
 ```
 
-the widget shows merged 5-hour and weekly windows, ready/blocked account counts, and refill times.
+the widget shows merged 5-hour and weekly windows, banked reset credits, reset-credit expiry urgency, reset-use advice, ready/blocked account counts, and refill times.
 if the usage response includes a separate `GPT-5.3-Codex-Spark` quota under
 `additional_rate_limits`, the bridge returns it as a separate optional `spark`
 summary and the widget shows it only for accounts that actually report that quota.

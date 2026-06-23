@@ -8,6 +8,8 @@ const DEFAULT_CLIPROXY_BASE_URL = "http://127.0.0.1:8317";
 const DEFAULT_CODEX_AUTH_FILE = path.join(homedir(), ".codex", "auth.json");
 const DEFAULT_PORT = 8765;
 const CODEX_USAGE_URL = process.env.CODEX_USAGE_URL?.trim() || "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_RESET_CREDITS_URL = process.env.CODEX_RESET_CREDITS_URL?.trim()
+  || "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CODEX_USER_AGENT = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
 const OPENAI_OAUTH_TOKEN_URL = process.env.CODEX_OAUTH_TOKEN_URL?.trim() || "https://auth.openai.com/oauth/token";
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -247,22 +249,106 @@ async function callCodexUsage(file) {
   return file.source === "cliproxyapi" ? callCodexUsageViaCliproxy(file) : callCodexUsageDirect(file);
 }
 
+async function callCodexResetCreditsViaCliproxy(file) {
+  const data = await fetchJson(cliproxyUrl("/v0/management/api-call"), {
+    method: "POST",
+    headers: {
+      ...cliproxyHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      auth_index: file.authIndex,
+      method: "GET",
+      url: CODEX_RESET_CREDITS_URL,
+      header: {
+        Authorization: "Bearer $TOKEN$",
+        "Chatgpt-Account-Id": file.accountId,
+        "User-Agent": CODEX_USER_AGENT,
+        Originator: "codex_cli_rs",
+        "OAI-Product-Sku": "CODEX",
+        Accept: "application/json",
+      },
+    }),
+  });
+
+  const body = typeof data?.body === "string" ? JSON.parse(data.body) : data?.body;
+  if (data?.status_code < 200 || data?.status_code >= 300) {
+    throw new Error(`Codex reset credits call returned ${data?.status_code}: ${JSON.stringify(body)}`);
+  }
+  return body;
+}
+
+async function callCodexResetCreditsDirect(file) {
+  return fetchJson(CODEX_RESET_CREDITS_URL, {
+    headers: {
+      Authorization: `Bearer ${file.accessToken}`,
+      "Chatgpt-Account-Id": file.accountId,
+      "User-Agent": CODEX_USER_AGENT,
+      Originator: "codex_cli_rs",
+      "OAI-Product-Sku": "CODEX",
+      Accept: "application/json",
+    },
+  });
+}
+
+async function callCodexResetCredits(file) {
+  return file.source === "cliproxyapi" ? callCodexResetCreditsViaCliproxy(file) : callCodexResetCreditsDirect(file);
+}
+
 function clampPercent(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
   return Math.max(0, Math.min(100, number));
 }
 
-function epochSecondsToIso(value) {
+function epochToIso(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return null;
-  return new Date(number * 1000).toISOString();
+  const epochMilliseconds = number > 10_000_000_000 ? number : number * 1000;
+  return new Date(epochMilliseconds).toISOString();
+}
+
+function secondsUntil(iso) {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.ceil((timestamp - Date.now()) / 1000));
+}
+
+function duration(seconds) {
+  const number = Number(seconds);
+  if (!Number.isFinite(number)) return "-";
+  const clamped = Math.max(0, Math.floor(number));
+  const days = Math.floor(clamped / 86_400);
+  const hours = Math.floor((clamped % 86_400) / 3_600);
+  const minutes = Math.floor((clamped % 3_600) / 60);
+
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function optionalString(value) {
+  if (value === undefined || value === null) return null;
+  return String(value);
+}
+
+function finiteNumberOrNaN(value) {
+  if (value === undefined || value === null || value === "") return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function isoDateString(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (Number.isFinite(Number(value))) return epochToIso(value);
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 function parseStatusReset(statusMessage) {
   if (!statusMessage) return null;
   try {
-    return epochSecondsToIso(JSON.parse(statusMessage)?.error?.resets_at);
+    return epochToIso(JSON.parse(statusMessage)?.error?.resets_at);
   } catch {
     return null;
   }
@@ -271,10 +357,14 @@ function parseStatusReset(statusMessage) {
 function normalizeWindow(rateLimit, windowKey) {
   const window = rateLimit?.[windowKey] || {};
   const usedPercent = clampPercent(window.used_percent);
+  const resetAt = epochToIso(window.reset_at);
   return {
     usedPercent,
     remainingPercent: 100 - usedPercent,
-    resetAt: epochSecondsToIso(window.reset_at),
+    resetAt,
+    resetAfterSeconds: Number.isFinite(Number(window.reset_after_seconds))
+      ? Math.max(0, Number(window.reset_after_seconds))
+      : secondsUntil(resetAt),
     windowSeconds: Number(window.limit_window_seconds || 0),
   };
 }
@@ -322,6 +412,90 @@ function normalizeAccount(file, usage) {
   };
 }
 
+export function makeResetExpiryUrgency({ expiresAt, isAvailable, now = Date.now() }) {
+  if (!isAvailable) {
+    return { level: "inactive", badge: "Used", hint: null };
+  }
+
+  if (!expiresAt) {
+    return { level: "unknown", badge: "Available", hint: "Expiry unknown" };
+  }
+
+  const timestamp = Date.parse(expiresAt);
+  if (!Number.isFinite(timestamp)) {
+    return { level: "unknown", badge: "Available", hint: "Expiry unknown" };
+  }
+
+  const seconds = (timestamp - now) / 1000;
+  if (seconds <= 0) {
+    return { level: "expired", badge: "Expired", hint: "This reset is past its expiry time" };
+  }
+  if (seconds <= 86_400) {
+    return { level: "urgent", badge: "Ends today", hint: "Use it soon or let it go" };
+  }
+  if (seconds <= 3 * 86_400) {
+    return { level: "soon", badge: "Expires soon", hint: "Worth keeping top of mind" };
+  }
+  if (seconds <= 7 * 86_400) {
+    return { level: "approaching", badge: "This week", hint: "Expiry is getting closer" };
+  }
+
+  return { level: "normal", badge: "Available", hint: null };
+}
+
+function normalizeResetCredit(credit, index) {
+  const id = optionalString(credit?.id);
+  if (!id) return null;
+
+  const status = optionalString(credit?.status) || "unknown";
+  const expiresAt = isoDateString(credit?.expires_at ?? credit?.expiresAt);
+  const isAvailable = status.toLowerCase() === "available";
+
+  return {
+    id,
+    resetType: optionalString(credit?.reset_type ?? credit?.resetType) || "unknown",
+    status,
+    isAvailable,
+    grantedAt: isoDateString(credit?.granted_at ?? credit?.grantedAt),
+    expiresAt,
+    redeemStartedAt: isoDateString(credit?.redeem_started_at ?? credit?.redeemStartedAt),
+    redeemedAt: isoDateString(credit?.redeemed_at ?? credit?.redeemedAt),
+    title: optionalString(credit?.title),
+    description: optionalString(credit?.description),
+    urgency: makeResetExpiryUrgency({ expiresAt, isAvailable }),
+    sortIndex: index,
+  };
+}
+
+function normalizeResetCredits(response) {
+  const credits = (Array.isArray(response?.credits) ? response.credits : [])
+    .map(normalizeResetCredit)
+    .filter(Boolean)
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.expiresAt || "");
+      const rightTime = Date.parse(right.expiresAt || "");
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+      if (Number.isFinite(leftTime)) return -1;
+      if (Number.isFinite(rightTime)) return 1;
+      return left.sortIndex - right.sortIndex;
+    })
+    .map(({ sortIndex, ...credit }) => credit);
+  const availableCredits = credits.filter((credit) => credit.isAvailable);
+  const serverAvailableCount = Number(response?.available_count ?? response?.availableCount);
+  const availableCount = Number.isFinite(serverAvailableCount) ? serverAvailableCount : availableCredits.length;
+
+  return {
+    availableCount,
+    creditCount: credits.length,
+    urgentCount: availableCredits.filter((credit) => credit.urgency.level === "urgent").length,
+    expiringSoonCount: availableCredits
+      .filter((credit) => ["urgent", "soon", "approaching"].includes(credit.urgency.level))
+      .length,
+    nextExpiryAt: isoBy(availableCredits.map((credit) => credit.expiresAt), Math.min),
+    credits,
+  };
+}
+
 function isoBy(values, pick) {
   const times = values.filter(Boolean).map((value) => Date.parse(value)).filter(Number.isFinite);
   if (times.length === 0) return null;
@@ -356,6 +530,175 @@ function summarizeWindow(accounts, windowKey) {
   };
 }
 
+export function makeUsageNudge({ fiveHour, weekly, resetCount, resetUrgencies = [] }) {
+  const resetCountNumber = finiteNumberOrNaN(resetCount);
+
+  if (resetCountNumber > 0 && resetUrgencies.some((urgency) => urgency.level === "urgent")) {
+    return {
+      tier: "expiringReset",
+      title: "Use it or lose it",
+      message: "A banked reset expires today. If there is useful work queued, spend that reset before it disappears.",
+      detail: "Reset ends today",
+    };
+  }
+
+  const weeklyRemaining = Number(weekly?.remainingPercent);
+  if (!Number.isFinite(weeklyRemaining)) {
+    return {
+      tier: "unavailable",
+      title: "Waiting on the meters",
+      message: "Reset stash loaded. Codex usage windows are still warming up.",
+      detail: "Try again soon",
+    };
+  }
+
+  if (!Number.isFinite(resetCountNumber)) {
+    return {
+      tier: "unavailable",
+      title: "Reset credits unavailable",
+      message: "Quota meters loaded, but Codex did not return reset-credit data. Check the bridge error before spending a reset.",
+      detail: "Reset status unknown",
+    };
+  }
+
+  const fiveHourRemaining = Number(fiveHour?.remainingPercent);
+  const fiveHourReset = finiteNumberOrNaN(fiveHour?.resetAfterSeconds);
+  const weeklyResetSeconds = finiteNumberOrNaN(weekly?.resetAfterSeconds);
+
+  if (resetCountNumber === 0) {
+    return {
+      tier: "noResets",
+      title: "No reset parachute",
+      message: "Watch the meters. There is no banked reset for a big sprint.",
+      detail: `${Math.round(weeklyRemaining)}% weekly left`,
+    };
+  }
+
+  if (
+    Number.isFinite(fiveHourRemaining)
+    && Number.isFinite(fiveHourReset)
+    && fiveHourRemaining <= 12
+    && weeklyRemaining >= 25
+    && fiveHourReset <= 90 * 60
+  ) {
+    return {
+      tier: "waitFiveHour",
+      title: "Let the 5h tank refill",
+      message: "Weekly room is still decent. Let the short window catch up before spending a reset.",
+      detail: `5h resets in ${duration(fiveHourReset)}`,
+    };
+  }
+
+  if (
+    Number.isFinite(fiveHourRemaining)
+    && Number.isFinite(fiveHourReset)
+    && fiveHourRemaining <= 12
+    && weeklyRemaining >= 50
+    && fiveHourReset > 90 * 60
+    && fiveHourReset <= 3 * 3_600
+  ) {
+    return {
+      tier: "deadline",
+      title: "Deadline call",
+      message: "Weekly runway looks great. If this is deadline work, spend a reset. Otherwise let the 5h clock do its thing.",
+      detail: `5h resets in ${duration(fiveHourReset)}`,
+    };
+  }
+
+  if (
+    Number.isFinite(fiveHourRemaining)
+    && Number.isFinite(fiveHourReset)
+    && fiveHourRemaining <= 12
+    && weeklyRemaining >= 50
+    && fiveHourReset > 3 * 3_600
+  ) {
+    return {
+      tier: "deadline",
+      title: "Deadline override",
+      message: "The short window is hours away. Big deadline? Use a reset. Otherwise coast until the 5h refill.",
+      detail: `5h resets in ${duration(fiveHourReset)}`,
+    };
+  }
+
+  if (!Number.isFinite(weeklyResetSeconds)) {
+    return {
+      tier: "steady",
+      title: "Reset timing unclear",
+      message: "Usage meters loaded, but Codex did not return a weekly reset timer. Spend a reset only if work is blocked.",
+      detail: `${Math.round(weeklyRemaining)}% weekly left`,
+    };
+  }
+
+  const weeklyDays = weeklyResetSeconds / 86_400;
+
+  if (resetCountNumber >= 2 && weeklyRemaining <= 15 && weeklyDays >= 4) {
+    return {
+      tier: "spend",
+      title: "Go burn some tokens",
+      message: `You have ${resetCountNumber} resets banked, weekly room is thin, and refresh is days away. Push the run, then spend a reset if Codex blocks real work.`,
+      detail: `${Math.round(weeklyRemaining)}% weekly left`,
+    };
+  }
+
+  if (resetCountNumber >= 1 && weeklyRemaining <= 20 && weeklyDays >= 2) {
+    return {
+      tier: "useIfBlocked",
+      title: "Green light, with brakes",
+      message: "If real work hits the wall, spending a reset makes sense. Do not use it just to tidy up the meter.",
+      detail: `${duration(weeklyResetSeconds)} to weekly reset`,
+    };
+  }
+
+  if (weeklyRemaining >= 35 && weeklyDays <= 3) {
+    return {
+      tier: "hold",
+      title: "Hold that reset",
+      message: "Plenty of weekly runway and the next refresh is close. Let the reset stay banked.",
+      detail: `${Math.round(weeklyRemaining)}% weekly left`,
+    };
+  }
+
+  if (weeklyRemaining >= 25 && weeklyDays <= 2) {
+    return {
+      tier: "hold",
+      title: "Pocket the reset",
+      message: "Capacity is not tight enough this close to weekly refresh. Keep the reset in your back pocket.",
+      detail: `${duration(weeklyResetSeconds)} away`,
+    };
+  }
+
+  return {
+    tier: "steady",
+    title: "Cruise mode",
+    message: "Keep working. Re-check before a big run.",
+    detail: `${Math.round(weeklyRemaining)}% weekly left`,
+  };
+}
+
+function summarizeResetCredits(accounts) {
+  const resetCreditSets = accounts.map((account) => account.resetCredits).filter(Boolean);
+  const credits = resetCreditSets.flatMap((resetCredits) => resetCredits.credits);
+  const availableCredits = credits.filter((credit) => credit.isAvailable);
+  const errors = accounts
+    .filter((account) => account.resetCreditsError)
+    .map((account) => ({ email: account.email, message: account.resetCreditsError }));
+  const availableCount = resetCreditSets.length > 0
+    ? resetCreditSets.reduce((sum, resetCredits) => sum + resetCredits.availableCount, 0)
+    : null;
+
+  return {
+    availableCount,
+    creditCount: resetCreditSets.reduce((sum, resetCredits) => sum + resetCredits.creditCount, 0),
+    urgentCount: availableCredits.filter((credit) => credit.urgency.level === "urgent").length,
+    expiringSoonCount: availableCredits
+      .filter((credit) => ["urgent", "soon", "approaching"].includes(credit.urgency.level))
+      .length,
+    nextExpiryAt: isoBy(availableCredits.map((credit) => credit.expiresAt), Math.min),
+    errors,
+    credits,
+  };
+}
+
 function summarizeAccounts(accounts, source) {
   const blockedAccounts = accounts.filter((account) => !account.allowed);
   const sparkAccounts = accounts
@@ -377,6 +720,23 @@ function summarizeAccounts(accounts, source) {
         },
       }
     : null;
+  const windows = {
+    fiveHour: summarizeWindow(accounts, "fiveHour"),
+    weekly: summarizeWindow(accounts, "weekly"),
+  };
+  const resetCredits = summarizeResetCredits(accounts);
+  const nudge = makeUsageNudge({
+    fiveHour: {
+      ...windows.fiveHour,
+      resetAfterSeconds: secondsUntil(windows.fiveHour.allCurrentUsageClearsAt || windows.fiveHour.nextRefillAt),
+    },
+    weekly: {
+      ...windows.weekly,
+      resetAfterSeconds: secondsUntil(windows.weekly.allCurrentUsageClearsAt || windows.weekly.nextRefillAt),
+    },
+    resetCount: resetCredits.availableCount,
+    resetUrgencies: resetCredits.credits.map((credit) => credit.urgency),
+  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -393,18 +753,30 @@ function summarizeAccounts(accounts, source) {
       )),
       Math.min,
     ),
-    windows: {
-      fiveHour: summarizeWindow(accounts, "fiveHour"),
-      weekly: summarizeWindow(accounts, "weekly"),
-    },
+    windows,
     spark,
+    resetCredits,
+    nudge,
     accounts,
   };
 }
 
+async function buildAccountSnapshot(file) {
+  const account = normalizeAccount(file, await callCodexUsage(file));
+
+  try {
+    account.resetCredits = normalizeResetCredits(await callCodexResetCredits(file));
+  } catch (error) {
+    account.resetCredits = null;
+    account.resetCreditsError = error instanceof Error ? error.message : String(error);
+  }
+
+  return account;
+}
+
 export async function buildQuotaSnapshot() {
   const files = await listCodexAuthFiles();
-  const results = await Promise.allSettled(files.map(async (file) => normalizeAccount(file, await callCodexUsage(file))));
+  const results = await Promise.allSettled(files.map(buildAccountSnapshot));
   const accounts = [];
   const errors = [];
 
@@ -421,8 +793,8 @@ export async function buildQuotaSnapshot() {
   }
 
   const source = hasCliproxyManagement()
-    ? "cliproxyapi:/v0/management/api-call -> chatgpt.com/backend-api/wham/usage"
-    : "codex-auth-file -> chatgpt.com/backend-api/wham/usage";
+    ? "cliproxyapi:/v0/management/api-call -> chatgpt.com/backend-api/wham/{usage,rate-limit-reset-credits}"
+    : "codex-auth-file -> chatgpt.com/backend-api/wham/{usage,rate-limit-reset-credits}";
 
   return { ...summarizeAccounts(accounts, source), errorCount: errors.length, errors };
 }

@@ -90,6 +90,36 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
       return;
     }
 
+    if (request.url === "/reset-credits") {
+      requests.push({
+        kind: "reset-credits",
+        authorization: request.headers.authorization,
+        accountId: request.headers["chatgpt-account-id"],
+      });
+      sendJson(response, 200, {
+        available_count: 2,
+        credits: [
+          {
+            id: 123,
+            reset_type: "rate_limit",
+            status: "available",
+            expires_at: new Date(Date.now() + 20 * 60 * 60).toISOString(),
+            title: "One free rate limit reset",
+          },
+          {
+            status: "available",
+            expires_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+          {
+            id: "credit-2",
+            reset_type: "rate_limit",
+            status: "redeemed",
+          },
+        ],
+      });
+      return;
+    }
+
     sendJson(response, 404, { error: "not found" });
   });
 
@@ -98,6 +128,7 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
   process.env.CODEX_AUTH_FILE = authFile;
   process.env.CODEX_OAUTH_TOKEN_URL = `http://127.0.0.1:${port}/oauth/token`;
   process.env.CODEX_USAGE_URL = `http://127.0.0.1:${port}/usage`;
+  process.env.CODEX_RESET_CREDITS_URL = `http://127.0.0.1:${port}/reset-credits`;
   delete process.env.CLIPROXY_MANAGEMENT_KEY;
 
   try {
@@ -105,18 +136,27 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
     const { buildQuotaSnapshot } = await import(moduleUrl);
     const snapshot = await buildQuotaSnapshot();
 
-    assert.equal(snapshot.source, "codex-auth-file -> chatgpt.com/backend-api/wham/usage");
+    assert.equal(snapshot.source, "codex-auth-file -> chatgpt.com/backend-api/wham/{usage,rate-limit-reset-credits}");
     assert.equal(snapshot.accountCount, 1);
     assert.equal(snapshot.readyAccountCount, 1);
     assert.equal(snapshot.errorCount, 0);
     assert.equal(snapshot.windows.fiveHour.remainingPercent, 75);
     assert.equal(snapshot.windows.weekly.remainingPercent, 50);
+    assert.equal(snapshot.resetCredits.availableCount, 2);
+    assert.equal(snapshot.resetCredits.creditCount, 2);
+    assert.equal(snapshot.resetCredits.urgentCount, 1);
+    assert.equal(snapshot.accounts[0].resetCredits.availableCount, 2);
+    assert.equal(snapshot.accounts[0].resetCredits.credits[0].id, "123");
+    assert.equal(snapshot.nudge.tier, "expiringReset");
+    assert.equal(snapshot.nudge.title, "Use it or lose it");
     assert.deepEqual(
       requests.map((request) => request.kind),
-      ["refresh", "usage"],
+      ["refresh", "usage", "reset-credits"],
     );
     assert.equal(requests[1].authorization, "Bearer fresh-access");
     assert.equal(requests[1].accountId, "acct_123");
+    assert.equal(requests[2].authorization, "Bearer fresh-access");
+    assert.equal(requests[2].accountId, "acct_123");
 
     const refreshedAuth = JSON.parse(await readFile(authFile, "utf8"));
     assert.equal(refreshedAuth.tokens.access_token, "fresh-access");
@@ -126,4 +166,67 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
     await new Promise((resolve, reject) => upstream.close((error) => (error ? reject(error) : resolve())));
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("reset urgency follows the reset watcher boundaries", async () => {
+  const { makeResetExpiryUrgency } = await import(`../server.mjs?urgency=${Date.now()}`);
+  const now = Date.parse("2027-01-15T08:00:00.000Z");
+  const after = (seconds) => new Date(now + seconds * 1000).toISOString();
+
+  assert.equal(makeResetExpiryUrgency({ expiresAt: after(7 * 86_400 + 1), isAvailable: true, now }).level, "normal");
+  assert.equal(makeResetExpiryUrgency({ expiresAt: after(7 * 86_400), isAvailable: true, now }).level, "approaching");
+  assert.equal(makeResetExpiryUrgency({ expiresAt: after(3 * 86_400), isAvailable: true, now }).level, "soon");
+  assert.equal(makeResetExpiryUrgency({ expiresAt: after(86_400), isAvailable: true, now }).level, "urgent");
+  assert.equal(makeResetExpiryUrgency({ expiresAt: after(0), isAvailable: true, now }).level, "expired");
+  assert.equal(makeResetExpiryUrgency({ expiresAt: after(30 * 60), isAvailable: false, now }).level, "inactive");
+  assert.equal(makeResetExpiryUrgency({ expiresAt: null, isAvailable: true, now }).level, "unknown");
+});
+
+test("usage nudge ports reset watcher advice rules", async () => {
+  const { makeUsageNudge } = await import(`../server.mjs?nudge=${Date.now()}`);
+
+  assert.equal(
+    makeUsageNudge({
+      weekly: { remainingPercent: 10, resetAfterSeconds: 5 * 86_400 },
+      resetCount: 2,
+    }).tier,
+    "spend",
+  );
+  assert.equal(
+    makeUsageNudge({
+      fiveHour: { remainingPercent: 5, resetAfterSeconds: 60 * 60 },
+      weekly: { remainingPercent: 80, resetAfterSeconds: 5 * 86_400 },
+      resetCount: 1,
+    }).tier,
+    "waitFiveHour",
+  );
+  assert.equal(
+    makeUsageNudge({
+      fiveHour: { remainingPercent: 5, resetAfterSeconds: 4 * 3_600 },
+      weekly: { remainingPercent: 80, resetAfterSeconds: 5 * 86_400 },
+      resetCount: 1,
+    }).tier,
+    "deadline",
+  );
+  assert.equal(
+    makeUsageNudge({
+      weekly: { remainingPercent: 40, resetAfterSeconds: 2 * 86_400 },
+      resetCount: 2,
+    }).tier,
+    "hold",
+  );
+  assert.equal(
+    makeUsageNudge({
+      weekly: { remainingPercent: 40, resetAfterSeconds: null },
+      resetCount: 1,
+    }).tier,
+    "steady",
+  );
+  assert.equal(
+    makeUsageNudge({
+      weekly: { remainingPercent: 40, resetAfterSeconds: 2 * 86_400 },
+      resetCount: null,
+    }).title,
+    "Reset credits unavailable",
+  );
 });
