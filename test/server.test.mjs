@@ -34,6 +34,8 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
   const tempDir = await mkdtemp(path.join(tmpdir(), "codex-quota-widget-"));
   const authFile = path.join(tempDir, "auth.json");
   const requests = [];
+  const soonResetExpiryAt = new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString();
+  const laterResetExpiryAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
 
   await writeFile(
     authFile,
@@ -103,12 +105,12 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
             id: 123,
             reset_type: "rate_limit",
             status: "available",
-            expires_at: new Date(Date.now() + 20 * 60 * 60).toISOString(),
+            expires_at: soonResetExpiryAt,
             title: "One free rate limit reset",
           },
           {
             status: "available",
-            expires_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+            expires_at: laterResetExpiryAt,
           },
           {
             id: "credit-2",
@@ -145,6 +147,7 @@ test("single-account mode refreshes Codex auth and reads usage without CLIProxyA
     assert.equal(snapshot.resetCredits.availableCount, 2);
     assert.equal(snapshot.resetCredits.creditCount, 2);
     assert.equal(snapshot.resetCredits.urgentCount, 1);
+    assert.equal(snapshot.resetCredits.nextExpiryAt, soonResetExpiryAt);
     assert.equal(snapshot.accounts[0].resetCredits.availableCount, 2);
     assert.equal(snapshot.accounts[0].resetCredits.credits[0].id, "123");
     assert.equal(snapshot.nudge.tier, "expiringReset");

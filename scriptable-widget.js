@@ -44,6 +44,8 @@ function plural(count, word) {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function fillWidthFor(value, width) {
   const remaining = clamp(number(value), 0, 100);
   return Math.round((remaining / 100) * width);
@@ -119,6 +121,39 @@ function timeUntil(iso) {
   return restHours ? `${days}d ${restHours}h` : `${days}d`;
 }
 
+function formatExpiryDate(iso) {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return null;
+
+  const date = new Date(timestamp);
+  const month = MONTHS[date.getMonth()];
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${month} ${day} ${hour}:${minute}`;
+}
+
+function resetExpiryTitle(resetCredits) {
+  const expiry = formatExpiryDate(resetCredits.nextExpiryAt);
+  if (expiry) return `exp ${expiry}`;
+
+  const available = Number(resetCredits.availableCount);
+  if (Number.isFinite(available) && available <= 0) return "no expiry";
+  return "expiry ?";
+}
+
+function resetExpiryDetail(resetCredits) {
+  const expiry = formatExpiryDate(resetCredits.nextExpiryAt);
+  if (expiry) {
+    const relative = timeUntil(resetCredits.nextExpiryAt);
+    return `closest reset expires ${expiry} (${relative})`;
+  }
+
+  const available = Number(resetCredits.availableCount);
+  if (Number.isFinite(available) && available <= 0) return "no banked resets to expire";
+  return "reset expiry unavailable";
+}
+
 function addText(stack, text, options = {}) {
   const line = stack.addText(String(text));
   line.textColor = options.color || COLORS.text;
@@ -155,7 +190,7 @@ function addResetAdvice(widget, data) {
   row.centerAlignContent();
   addText(row, resetLabel, { size: 11, color: accent, font: Font.boldSystemFont(11) });
   row.addSpacer();
-  addText(row, nudge.title || "Reset status", {
+  addText(row, resetExpiryTitle(resetCredits), {
     size: 11,
     color: COLORS.text,
     font: Font.boldSystemFont(11),
@@ -164,8 +199,7 @@ function addResetAdvice(widget, data) {
 
   if (config.widgetFamily !== "small") {
     widget.addSpacer(3);
-    const detail = nudge.detail || (resetCredits.nextExpiryAt ? `next expires ${timeUntil(resetCredits.nextExpiryAt)}` : "");
-    addText(widget, detail, { size: 10, color: COLORS.muted, lineLimit: 1 });
+    addText(widget, resetExpiryDetail(resetCredits), { size: 10, color: COLORS.muted, lineLimit: 1 });
   }
 }
 
