@@ -4,7 +4,7 @@
   tiny bridge + scriptable widget for codex quota on your home screen.
 </p>
 
-show one regular codex account directly, or merge multiple codex accounts through cliproxyapi, in one home-screen view with unified 5-hour and weekly quota windows, banked reset credits, and reset-use advice.
+show one regular codex account directly, or merge multiple codex accounts through cliproxyapi, in one home-screen view with unified 5-hour and weekly quota windows, banked reset credits, the closest reset expiry, and reset-use advice.
 
 <p align="center">
   <img src="assets/widget-preview.png" alt="codex quota widget preview" width="450">
@@ -93,6 +93,8 @@ const QUOTA_URL = "http://100.x.y.z:8765/quota?token=<your-widget-token>";
 
 then add a Scriptable widget to the home screen and select the script.
 
+when updating from an older version, replace the pasted Scriptable script too. the bridge already returns reset-credit expiry data, but the home-screen widget only shows the closest reset expiry after `scriptable-widget.js` has been updated.
+
 the script asks ios to refresh the widget every 5 minutes. ios may still delay home-screen widget refreshes.
 
 ---
@@ -115,7 +117,7 @@ https://chatgpt.com/backend-api/wham/usage
 https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
 ```
 
-the widget shows merged 5-hour and weekly windows, banked reset credits, reset-credit expiry urgency, reset-use advice, ready/blocked account counts, and refill times.
+the widget shows merged 5-hour and weekly windows, banked reset credits, the closest reset expiry, reset-credit expiry urgency, reset-use advice, ready/blocked account counts, and refill times.
 if the usage response includes a separate `GPT-5.3-Codex-Spark` quota under
 `additional_rate_limits`, the bridge returns it as a separate optional `spark`
 summary and the widget shows it only for accounts that actually report that quota.
